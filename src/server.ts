@@ -53,7 +53,7 @@ const ingestInput = z.object({
   subtopic: z.string().nullable().optional(),
   assignment_type: z.string().nullable().optional(), // "essay" | "worksheet" | ...
   source_name: z.string().nullable().optional(),   // e.g. "AP Lit – Great Expectations PDF"
-  content: z.string(),                              // raw text or extracted text from PDF
+  raw_text: z.string(),                              // raw text or extracted text from PDF
   original_prompt: z.string().nullable().optional(),
   model_answer: z.string().nullable().optional(),
   outcome: z.enum(['success', 'fail']).nullable().optional(),
@@ -174,8 +174,8 @@ app.get('/.well-known/mcp.json', (_req, res) => {
   });
 });
 
-// Main MCP endpoint – ChatGPT will POST here
-app.post('/', async (req, res) => {
+// Main MCP endpoint – ChatGPT will POST to /mcp
+app.post('/mcp', async (req, res) => {
   const transport = new StreamableHTTPServerTransport();
 
   await server.connect(transport);
