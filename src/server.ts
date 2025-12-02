@@ -160,10 +160,13 @@ app.get("/health", (_req, res) => {
   res.json({ status: "ok", server: "studyos-mcp" });
 });
 
-// Very simple manifest for Agent Builder
+// MCP manifest for Agent Builder
 const manifest = {
+  schema_version: "v1",
   name: "studyos-mcp",
   version: "1.0.0",
+  description:
+    "Tools for storing, searching, and logging my school knowledge base using Supabase.",
   tools: [
     {
       name: "ingest_content",
@@ -177,10 +180,10 @@ const manifest = {
           type: { type: ["string", "null"] },
           subtopic: { type: ["string", "null"] },
           assignment_type: { type: ["string", "null"] },
-          source_name: { type: ["string", "null"] },
+          source_name: { type: ["string", "null"] }
         },
-        required: ["raw_text"],
-      },
+        required: ["raw_text"]
+      }
     },
     {
       name: "search_content",
@@ -193,15 +196,15 @@ const manifest = {
           course: { type: ["string", "null"] },
           types: {
             type: "array",
-            items: { type: "string" },
+            items: { type: "string" }
           },
           subtopic: { type: ["string", "null"] },
           assignment_type: { type: ["string", "null"] },
           top_k: { type: "number" },
-          threshold: { type: "number" },
+          threshold: { type: "number" }
         },
-        required: ["query"],
-      },
+        required: ["query"]
+      }
     },
     {
       name: "log_completion_result",
@@ -217,12 +220,12 @@ const manifest = {
           assignment_type: { type: ["string", "null"] },
           subtopic: { type: ["string", "null"] },
           score: { type: "number" },
-          teacher_feedback: { type: ["string", "null"] },
+          teacher_feedback: { type: ["string", "null"] }
         },
-        required: ["original_prompt", "model_answer", "outcome"],
-      },
-    },
-  ],
+        required: ["original_prompt", "model_answer", "outcome"]
+      }
+    }
+  ]
 };
 
 // Manifest at base URL
