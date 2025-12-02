@@ -1,143 +1,168 @@
-import express, { Request, Response } from "express";
-import { z } from "zod";
+import "dotenv/config";
+import express from "express";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
+import { z } from "zod";
 
-// 1. Create MCP server
+const PORT = Number(process.env.PORT ?? 10000);
+const BACKEND_URL = process.env.STUDYOS_BACKEND_URL ?? "";
+
+// ---------- Helper to talk to your existing backend ----------
+
+async function forwardToBackend<TArgs extends object>(
+  path: string,
+  args: TArgs
+) {
+  if (!BACKEND_URL) {
+    throw new Error("STUDYOS_BACKEND_URL is not set");
+  }
+
+  const res = await fetch(`${BACKEND_URL}${path}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(args),
+  });
+
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new Error(`Backend ${path} failed: ${res.status} ${text}`);
+  }
+
+  try {
+    return await res.json();
+  } catch {
+    return { ok: true };
+  }
+}
+
+// ---------- MCP server & tool definitions ----------
+
 const server = new McpServer({
-  name: "studyos-mcp-server",
+  name: "studyos-mcp",
   version: "1.0.0",
+  description: "MCP wrapper around StudyOS backend tools.",
 });
 
-// 2. Define tools (keep / extend these as you like)
-
-// Very simple placeholder schemas to make the manifest valid.
-// You can tighten these later.
-const ingestSchema = z.object({
-  text: z.string().describe("Raw text or assignment / resource content"),
+// Ingest content: must use raw_text to match your backend
+const ingestInput = z.object({
+  course: z.string().nullable().optional(),
+  type: z.string().nullable().optional(),
+  subtopic: z.string().nullable().optional(),
+  assignment_type: z.string().nullable().optional(),
+  source_name: z.string().nullable().optional(),
+  raw_text: z.string(), // IMPORTANT: matches backend req.body.raw_text
+  original_prompt: z.string().nullable().optional(),
+  model_answer: z.string().nullable().optional(),
+  outcome: z.enum(["success", "fail"]).nullable().optional(),
+  score: z.number().nullable().optional(),
+  teacher_feedback: z.string().nullable().optional(),
 });
 
-const searchSchema = z.object({
-  query: z.string().describe("Natural language search query."),
-});
-
-const logSchema = z.object({
-  original_prompt: z.string().describe("User’s original assignment prompt."),
-  model_answer: z.string().describe("The answer the model produced."),
-  outcome: z.string().describe("e.g. success / fail / unknown."),
-});
-
-server.tool(
+server.registerTool(
   "ingest_content",
-  "Ingest user-provided school resources or instructions into the StudyOS knowledge base.",
-  ingestSchema,
-  async ({ text }) => {
-    // TODO: call your backend /ingest_content here if you want.
-    console.log("ingest_content called with text length:", text.length);
+  {
+    title: "Ingest school content",
+    description:
+      "Store user-provided resources or assignment instructions into the StudyOS vector database.",
+    inputSchema: ingestInput,
+  },
+  async (args) => {
+    const data = await forwardToBackend("/ingest_content", args);
+
     return {
+      structuredContent: data,
       content: [
         {
           type: "text",
-          text: "Ingested content (stub).",
+          text: "I saved this content into your StudyOS knowledge base.",
         },
       ],
     };
   }
 );
 
-server.tool(
+// Search content
+const searchInput = z.object({
+  course: z.string().nullable().optional(),
+  query: z.string(),
+  types: z.array(z.string()).nullable().optional(),
+  subtopic: z.string().nullable().optional(),
+  assignment_type: z.string().nullable().optional(),
+  top_k: z.number().optional().default(8),
+  threshold: z.number().optional().default(0.3),
+});
+
+server.registerTool(
   "search_content",
-  "Search the StudyOS knowledge base for information relevant to a query.",
-  searchSchema,
-  async ({ query }) => {
-    console.log("search_content called with query:", query);
-    // TODO: call your backend /search_content.
+  {
+    title: "Search StudyOS content",
+    description:
+      "Search previously ingested resources, instructions, and past assignments.",
+    inputSchema: searchInput,
+  },
+  async (args) => {
+    const data = await forwardToBackend("/search_content", args);
+
     return {
+      structuredContent: data,
       content: [
         {
           type: "text",
-          text: `Search results placeholder for: ${query}`,
+          text: "Here are the most relevant chunks I found in your StudyOS knowledge base.",
         },
       ],
     };
   }
 );
 
-server.tool(
+// Log completion result
+const logInput = z.object({
+  course: z.string().nullable().optional(),
+  assignment_type: z.string().nullable().optional(),
+  subtopic: z.string().nullable().optional(),
+  original_prompt: z.string(),
+  model_answer: z.string(),
+  outcome: z.enum(["success", "fail"]),
+  score: z.number().nullable().optional(),
+  teacher_feedback: z.string().nullable().optional(),
+});
+
+server.registerTool(
   "log_completion_result",
-  "Log whether an assignment attempt was good or bad so the system can learn over time.",
-  logSchema,
-  async ({ original_prompt, model_answer, outcome }) => {
-    console.log("log_completion_result:", { original_prompt, outcome });
-    // TODO: call your backend /log_completion_result.
+  {
+    title: "Log assignment result",
+    description:
+      "Log whether a generated assignment was successful or failed, including teacher feedback.",
+    inputSchema: logInput,
+  },
+  async (args) => {
+    const data = await forwardToBackend("/log_completion_result", args);
+
     return {
+      structuredContent: data,
       content: [
         {
           type: "text",
-          text: "Logged completion result (stub).",
+          text: "I logged this assignment outcome so I can learn from it in the future.",
         },
       ],
     };
   }
 );
 
-// 3. Express + Streamable HTTP transport
+// ---------- Express app & routes ----------
 
 const app = express();
 app.use(express.json());
 
-const transport = new StreamableHTTPServerTransport({
-  sessionIdGenerator: undefined, // stateless, good for Render
+// Health check
+app.get("/health", (_req, res) => {
+  res.json({ status: "ok", server: "studyos-mcp" });
 });
 
-async function setupServer() {
-  await server.connect(transport);
-}
-
-// 4. MCP HTTP endpoint(s)
-
-// Main MCP JSON-RPC POST endpoint
-app.post("/mcp", async (req: Request, res: Response) => {
-  try {
-    await transport.handleRequest(req, res, req.body);
-  } catch (error) {
-    console.error("Error handling MCP request:", error);
-    if (!res.headersSent) {
-      res.status(500).json({
-        jsonrpc: "2.0",
-        error: {
-          code: -32603,
-          message: "Internal server error",
-        },
-        id: null,
-      });
-    }
-  }
-});
-
-// Optional: also accept POST at root, in case a client uses "/" as base URL
-app.post("/", async (req: Request, res: Response) => {
-  try {
-    await transport.handleRequest(req, res, req.body);
-  } catch (error) {
-    console.error("Error handling root MCP request:", error);
-    if (!res.headersSent) {
-      res.status(500).json({
-        jsonrpc: "2.0",
-        error: {
-          code: -32603,
-          message: "Internal server error",
-        },
-        id: null,
-      });
-    }
-  }
-});
-
-// 5. MCP manifest at BOTH paths Agent Builder might try
-
+// Very simple manifest for Agent Builder
 const manifest = {
-  name: "studyos-mcp-server",
+  name: "studyos-mcp",
   version: "1.0.0",
   tools: [
     {
@@ -147,9 +172,14 @@ const manifest = {
       input_schema: {
         type: "object",
         properties: {
-          text: { type: "string" },
+          raw_text: { type: "string" },
+          course: { type: ["string", "null"] },
+          type: { type: ["string", "null"] },
+          subtopic: { type: ["string", "null"] },
+          assignment_type: { type: ["string", "null"] },
+          source_name: { type: ["string", "null"] },
         },
-        required: ["text"],
+        required: ["raw_text"],
       },
     },
     {
@@ -160,6 +190,15 @@ const manifest = {
         type: "object",
         properties: {
           query: { type: "string" },
+          course: { type: ["string", "null"] },
+          types: {
+            type: "array",
+            items: { type: "string" },
+          },
+          subtopic: { type: ["string", "null"] },
+          assignment_type: { type: ["string", "null"] },
+          top_k: { type: "number" },
+          threshold: { type: "number" },
         },
         required: ["query"],
       },
@@ -174,6 +213,11 @@ const manifest = {
           original_prompt: { type: "string" },
           model_answer: { type: "string" },
           outcome: { type: "string" },
+          course: { type: ["string", "null"] },
+          assignment_type: { type: ["string", "null"] },
+          subtopic: { type: ["string", "null"] },
+          score: { type: "number" },
+          teacher_feedback: { type: ["string", "null"] },
         },
         required: ["original_prompt", "model_answer", "outcome"],
       },
@@ -181,32 +225,34 @@ const manifest = {
   ],
 };
 
-// Root-style manifest: https://studyos-mcp-server.onrender.com/.well-known/mcp.json
-app.get("/.well-known/mcp.json", (_req: Request, res: Response) => {
+// Manifest at base URL
+app.get("/.well-known/mcp.json", (_req, res) => {
   res.json(manifest);
 });
 
-// BaseUrl-with-/mcp style manifest: https://.../mcp/.well-known/mcp.json
-app.get("/mcp/.well-known/mcp.json", (_req: Request, res: Response) => {
-  res.json(manifest);
-});
-
-// 6. Simple GET on root so the browser shows *something* instead of "Cannot GET /"
-app.get("/", (_req: Request, res: Response) => {
+// Optional: root path just so browser shows something
+app.get("/", (_req, res) => {
   res.type("text/plain").send("StudyOS MCP server is running");
 });
 
-// 7. Start server
+// MCP JSON-RPC endpoint
+app.post("/mcp", async (req, res) => {
+  const transport = new StreamableHTTPServerTransport();
 
-const PORT = process.env.PORT || 10000;
+  await server.connect(transport);
 
-setupServer()
-  .then(() => {
-    app.listen(PORT, () => {
-      console.log(`StudyOS MCP server listening on port ${PORT}`);
-    });
-  })
-  .catch((error) => {
-    console.error("Failed to set up MCP server:", error);
-    process.exit(1);
-  });
+  try {
+    await transport.handleRequest(req, res, req.body);
+  } catch (err) {
+    console.error("MCP transport error", err);
+    if (!res.headersSent) {
+      res.status(500).json({ error: "MCP transport error" });
+    }
+  }
+});
+
+// ---------- Start server ----------
+
+app.listen(PORT, () => {
+  console.log(`StudyOS MCP server listening on port ${PORT}`);
+});
